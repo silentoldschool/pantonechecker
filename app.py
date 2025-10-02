@@ -94,3 +94,15 @@ def list_users():
 
 if __name__ == "__main__":
     app.run(host='0.0.0.0', port=8080)
+
+# check 
+@app.route("/")
+def index():
+    return "PantoneChecker läuft erfolgreich 🚀"
+
+# Beispiel: Farben-Endpunkt
+@app.route("/colors")
+def colors():
+    return {"status": "ok", "message": "Hier kommen später die Farben."}
+
+
