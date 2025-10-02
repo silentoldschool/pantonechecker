@@ -1,0 +1,26 @@
+ version: "3.8"
+services:
+  db:
+    image: postgres:15
+    container_name: pantone_db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: pantone_user
+      POSTGRES_PASSWORD: pantone_pass_change_me
+      POSTGRES_DB: pantonechecker
+    volumes:
+      - /volume1/docker/pantonechecker/db_data:/var/lib/postgresql/data
+
+  backend:
+    build: ./backend
+    container_name: pantone_backend
+    restart: unless-stopped
+    depends_on:
+      - db
+    environment:
+      DATABASE_URL: postgresql://pantone_user:pantone_pass_change_me@db:5432/pantonechecker
+      FLASK_ENV: production
+    ports:
+      - "8080:8080"
+    volumes:
+      - /volume1/docker/pantonechecker/backend:/app
