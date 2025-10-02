@@ -6,40 +6,33 @@ from werkzeug.security import generate_password_hash, check_password_hash
 from flask_cors import CORS
 
 app = Flask(__name__)
-CORS(app)  # Erlaubt Cross-Origin Requests
+CORS(app)  # CORS erlauben für Frontend
 app.config['SQLALCHEMY_DATABASE_URI'] = os.getenv('DATABASE_URL','sqlite:///pantone.db')
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 db = SQLAlchemy(app)
 
-# ===========================
-# Datenbank-Modelle
-# ===========================
+# ------------------- Models -------------------
 
 class User(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     username = db.Column(db.String(150), unique=True, nullable=False)
     password_hash = db.Column(db.String(256), nullable=False)
     api_token = db.Column(db.String(64), unique=True, index=True)
-    role = db.Column(db.String(50), default='user')
+    role = db.Column(db.String(50), default='user')  # user / checker / admin
 
 class ColorCheck(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     hex_color = db.Column(db.String(16), nullable=False)
     pantone = db.Column(db.String(64))
     notes = db.Column(db.Text)
+    points = db.Column(db.String(200))  # CSV oder JSON
+    status = db.Column(db.String(20), default='pending')  # pending / approved / rejected
+    alternative_color = db.Column(db.String(16))
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
     user = db.relationship('User', backref='checks')
-    points = db.relationship('ColorPoint', backref='color', cascade="all, delete-orphan")
 
-class ColorPoint(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    name = db.Column(db.String(64), nullable=False)
-    color_id = db.Column(db.Integer, db.ForeignKey('color_check.id'), nullable=False)
-
-# ===========================
-# Hilfsfunktionen
-# ===========================
+# ------------------- Auth -------------------
 
 def token_auth():
     token = request.headers.get('X-API-TOKEN') or request.headers.get('Authorization')
@@ -52,18 +45,7 @@ def token_auth():
         abort(401, 'invalid token')
     return user
 
-# Beispiel: Mapping Pantone -> Hex
-pantone_map = {
-    "P 0186 U": "#FEE0E0",
-    "P 186 C": "#D91F26",
-    "P 1234 U": "#FFCC00",
-}
-def pantone_to_hex(pantone):
-    return pantone_map.get(pantone, "#FFFFFF")  # Weiß als Default
-
-# ===========================
-# Routes
-# ===========================
+# ------------------- Routes -------------------
 
 @app.route('/login', methods=['POST'])
 def login():
@@ -78,82 +60,129 @@ def login():
     if not user.api_token:
         user.api_token = uuid.uuid4().hex
         db.session.commit()
-    return jsonify({'token': user.api_token})
+    return jsonify({'token': user.api_token, 'role': user.role})
 
+# Neue Farbe einreichen (User)
 @app.route('/colorchecks/request', methods=['POST'])
 def request_color():
-    user = token_auth()
     data = request.get_json() or {}
-    pantone_raw = data.get('pantone')
-    points = data.get('points', [])
+    user = token_auth()
+    pantone = data.get('pantone')
+    points = data.get('points')  # CSV: TLW, KLB...
+    notes = data.get('notes')
+    
+    # Format normalisieren: "P XXXX U/C"
+    if pantone:
+        pantone = pantone.upper().replace(" ", "")
+        match = re.match(r"P(\d{3,4})([UC])", pantone)
+        if match:
+            pantone = f"P {match.group(1)} {match.group(2)}"
+        else:
+            return jsonify({'error': 'Pantone Format ungültig'}), 400
 
-    if not pantone_raw:
-        return jsonify({'error':'pantone required'}), 400
-
-    # Fehlertoleranz: z.B. P186u -> P 0186 U
-    match = re.match(r'P\s*(\d{1,4})\s*([UCuc])', pantone_raw.replace(' ','').upper())
-    if not match:
-        return jsonify({'error':'invalid pantone format'}), 400
-    number, suffix = match.groups()
-    pantone = f'P {int(number):04d} {suffix}'
-
-    hex_color = pantone_to_hex(pantone)
-
-    color_check = ColorCheck(
-        hex_color=hex_color,
+    cc = ColorCheck(
         pantone=pantone,
+        hex_color=data.get('hex_color') or '#ffffff',  # default falls leer
+        points=points,
+        notes=notes,
+        status='pending',
         user_id=user.id
     )
-    db.session.add(color_check)
+    db.session.add(cc)
     db.session.commit()
+    return jsonify({'message': 'Color requested', 'id': cc.id})
 
-    for p in points:
-        cp = ColorPoint(name=p, color_id=color_check.id)
-        db.session.add(cp)
-    db.session.commit()
-
-    return jsonify({
-        'id': color_check.id,
-        'pantone': pantone,
-        'hex_color': hex_color,
-        'points': points
-    }), 201
-
+# Alle Farben abrufen (für Admin/Checker)
 @app.route('/colorchecks', methods=['GET'])
 def list_checks():
     user = token_auth()
-    q = ColorCheck.query
-    if user.role != 'admin':
-        q = q.filter_by(user_id=user.id)
-    entries = q.order_by(ColorCheck.created_at.desc()).all()
-    result = []
-    for e in entries:
-        result.append({
+    if user.role in ['admin', 'checker']:
+        entries = ColorCheck.query.all()
+    else:
+        entries = ColorCheck.query.filter_by(user_id=user.id).all()
+    return jsonify([
+        {
             'id': e.id,
             'pantone': e.pantone,
             'hex_color': e.hex_color,
+            'points': e.points,
+            'status': e.status,
+            'alternative_color': e.alternative_color,
             'notes': e.notes,
             'created_at': e.created_at.isoformat(),
-            'user': e.user.username,
-            'points': [p.name for p in e.points]
-        })
-    return jsonify(result)
+            'user': e.user.username
+        } for e in entries
+    ])
+
+# Pending Farben für Checker
+@app.route('/colorchecks/pending', methods=['GET'])
+def pending_checks():
+    user = token_auth()
+    if user.role not in ['admin', 'checker']:
+        abort(403)
+    entries = ColorCheck.query.filter_by(status='pending').all()
+    return jsonify([
+        {
+            'id': e.id,
+            'pantone': e.pantone,
+            'hex_color': e.hex_color,
+            'points': e.points,
+            'notes': e.notes,
+            'user': e.user.username
+        } for e in entries
+    ])
+
+# Freigeben / Ablehnen
+@app.route('/colorchecks/<int:check_id>/approve', methods=['POST'])
+def approve_check(check_id):
+    user = token_auth()
+    if user.role not in ['admin','checker']:
+        abort(403)
+    cc = ColorCheck.query.get_or_404(check_id)
+    cc.status = 'approved'
+    db.session.commit()
+    return jsonify({'message': 'Color approved', 'id': cc.id})
+
+@app.route('/colorchecks/<int:check_id>/reject', methods=['POST'])
+def reject_check(check_id):
+    user = token_auth()
+    if user.role not in ['admin','checker']:
+        abort(403)
+    data = request.get_json() or {}
+    cc = ColorCheck.query.get_or_404(check_id)
+    cc.status = 'rejected'
+    cc.alternative_color = data.get('alternative_color')
+    db.session.commit()
+    return jsonify({'message': 'Color rejected', 'id': cc.id})
+
+# ------------------- User Verwaltung -------------------
 
 @app.route('/users', methods=['GET'])
 def list_users():
     user = token_auth()
     if user.role != 'admin':
         abort(403)
-    users = User.query.all()
-    return jsonify([{'id':u.id,'username':u.username,'role':u.role} for u in users])
+    return jsonify([{'id':u.id,'username':u.username,'role':u.role} for u in User.query.all()])
 
-@app.route("/")
-def index():
-    return "PantoneChecker läuft erfolgreich 🚀"
+@app.route('/users', methods=['POST'])
+def create_user():
+    user = token_auth()
+    if user.role != 'admin':
+        abort(403)
+    data = request.get_json() or {}
+    username = data.get('username')
+    password = data.get('password')
+    role = data.get('role','user')
+    if not username or not password:
+        return jsonify({'error':'username/password required'}), 400
+    if User.query.filter_by(username=username).first():
+        return jsonify({'error':'username exists'}), 400
+    u = User(username=username, password_hash=generate_password_hash(password), role=role, api_token=uuid.uuid4().hex)
+    db.session.add(u)
+    db.session.commit()
+    return jsonify({'id':u.id,'username':u.username,'role':u.role,'token':u.api_token})
 
-# ===========================
-# Datenbank anlegen
-# ===========================
+# ------------------- Init -------------------
 
 with app.app_context():
     db.create_all()
@@ -166,31 +195,13 @@ with app.app_context():
         )
         db.session.add(admin)
         db.session.commit()
-        print("Admin-User erstellt:", admin.username, "Token:", admin.api_token)
+        print("Admin erstellt:", admin.username, "Token:", admin.api_token)
+
+# ------------------- Frontend-Test -------------------
+
+@app.route("/")
+def index():
+    return "PantoneChecker läuft erfolgreich 🚀"
 
 if __name__ == "__main__":
     app.run(host='0.0.0.0', port=8080)
-
-
-# ==========================
-# Apitoken
-# ==========================
-@app.route('/get-token', methods=['POST'])
-def get_token():
-    data = request.get_json() or {}
-    username = data.get('username')
-    password = data.get('password')
-    if not username or not password:
-        return jsonify({'error':'username and password required'}), 400
-    
-    user = User.query.filter_by(username=username).first()
-    if not user or not check_password_hash(user.password_hash, password):
-        return jsonify({'error':'invalid credentials'}), 401
-    
-    # Token generieren, falls noch nicht vorhanden
-    if not user.api_token:
-        user.api_token = uuid.uuid4().hex
-        db.session.commit()
-    
-    return jsonify({'username': user.username, 'api_token': user.api_token})
-
