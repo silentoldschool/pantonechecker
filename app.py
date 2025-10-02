@@ -95,6 +95,25 @@ def list_users():
 if __name__ == "__main__":
     app.run(host='0.0.0.0', port=8080)
 
+# DB anlegen
+
+with app.app_context():
+    db.create_all()
+    if not User.query.filter_by(username="admin").first():
+        import uuid
+        from werkzeug.security import generate_password_hash
+        admin = User(
+            username="admin",
+            password_hash=generate_password_hash("admin123"),
+            api_token=uuid.uuid4().hex,
+            role="admin"
+        )
+        db.session.add(admin)
+        db.session.commit()
+        print("Admin-User erstellt:", admin.username, "Token:", admin.api_token)
+
+
+
 # check 
 @app.route("/")
 def index():
@@ -104,5 +123,6 @@ def index():
 @app.route("/colors")
 def colors():
     return {"status": "ok", "message": "Hier kommen später die Farben."}
+
 
 
