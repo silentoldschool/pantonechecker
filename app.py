@@ -1,6 +1,7 @@
 import os, uuid
 from datetime import datetime
 from flask import Flask, request, jsonify, abort
+from flask_cors import CORS
 from flask_sqlalchemy import SQLAlchemy
 from werkzeug.security import generate_password_hash, check_password_hash
 from flask_cors import CORS  # <-- Import CORS
@@ -125,3 +126,4 @@ with app.app_context():
 # === App starten ===
 if __name__ == "__main__":
     app.run(host='0.0.0.0', port=8080)
+
