@@ -127,3 +127,38 @@ with app.app_context():
 if __name__ == "__main__":
     app.run(host='0.0.0.0', port=8080)
 
+# Neuen User anlegen (nur Admin)
+@app.route('/users', methods=['POST'])
+def add_user():
+    user = token_auth()
+    if user.role != 'admin':
+        abort(403)
+    data = request.get_json() or {}
+    username = data.get('username')
+    password = data.get('password')
+    role = data.get('role', 'user')
+    if not username or not password:
+        return jsonify({'error':'username and password required'}), 400
+    if User.query.filter_by(username=username).first():
+        return jsonify({'error':'username exists'}), 400
+    new_user = User(
+        username=username,
+        password_hash=generate_password_hash(password),
+        role=role,
+        api_token=uuid.uuid4().hex
+    )
+    db.session.add(new_user)
+    db.session.commit()
+    return jsonify({'id': new_user.id, 'username': new_user.username, 'role': new_user.role, 'token': new_user.api_token}), 201
+
+# User löschen (nur Admin)
+@app.route('/users/<int:user_id>', methods=['DELETE'])
+def delete_user(user_id):
+    user = token_auth()
+    if user.role != 'admin':
+        abort(403)
+    target = User.query.get_or_404(user_id)
+    db.session.delete(target)
+    db.session.commit()
+    return jsonify({'message':'user deleted'})
+
