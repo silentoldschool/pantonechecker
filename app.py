@@ -1,20 +1,17 @@
 import os, uuid
 from datetime import datetime
 from flask import Flask, request, jsonify, abort
-from flask_cors import CORS
 from flask_sqlalchemy import SQLAlchemy
 from werkzeug.security import generate_password_hash, check_password_hash
-from flask_cors import CORS  # <-- Import CORS
+from flask_cors import CORS
 
-# === Flask App ===
 app = Flask(__name__)
-CORS(app)  # <-- CORS aktivieren (alle Domains erlaubt)
-
+CORS(app)
 app.config['SQLALCHEMY_DATABASE_URI'] = os.getenv('DATABASE_URL','sqlite:///pantone.db')
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 db = SQLAlchemy(app)
 
-# === Datenbank-Modelle ===
+# --- Models ---
 class User(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     username = db.Column(db.String(150), unique=True, nullable=False)
@@ -24,14 +21,24 @@ class User(db.Model):
 
 class ColorCheck(db.Model):
     id = db.Column(db.Integer, primary_key=True)
-    hex_color = db.Column(db.String(16), nullable=False)
     pantone = db.Column(db.String(64))
+    hex_color = db.Column(db.String(16), nullable=False)
     notes = db.Column(db.Text)
+    points = db.Column(db.String(256))  # z.B. "Testliner weiß, Kraftliner braun"
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
     user = db.relationship('User', backref='checks')
 
-# === Token-Authentifizierung ===
+# --- Pantone → Hex Mapping ---
+pantone_to_hex = {
+    "Pantone 186 C": "#C8102E",
+    "Pantone 123 C": "#FFC600",
+    "Pantone 280 C": "#012169",
+    "Pantone 356 C": "#009639",
+    "Pantone 7541 C": "#D9D9D6"
+}
+
+# --- Auth ---
 def token_auth():
     token = request.headers.get('X-API-TOKEN') or request.headers.get('Authorization')
     if token and token.startswith('Token '):
@@ -43,7 +50,7 @@ def token_auth():
         abort(401, 'invalid token')
     return user
 
-# === Endpoints ===
+# --- Routes ---
 @app.route('/login', methods=['POST'])
 def login():
     data = request.get_json() or {}
@@ -57,18 +64,27 @@ def login():
     if not user.api_token:
         user.api_token = uuid.uuid4().hex
         db.session.commit()
-    return jsonify({'token': user.api_token})
+    return jsonify({'token': user.api_token, 'role': user.role})
 
+# --- ColorChecks ---
 @app.route('/colorchecks', methods=['POST'])
 def add_check():
     user = token_auth()
     data = request.get_json() or {}
-    hex_color = data.get('hex_color')
     pantone = data.get('pantone')
+    hex_color = data.get('hex_color')
     notes = data.get('notes')
+    points = data.get('points')
+
+    # Auto Hex
+    if pantone and not hex_color:
+        hex_color = pantone_to_hex.get(pantone)
+        if not hex_color:
+            return jsonify({'error': 'Pantone unbekannt, bitte Hex manuell angeben'}), 400
     if not hex_color:
         return jsonify({'error':'hex_color required'}), 400
-    cc = ColorCheck(hex_color=hex_color, pantone=pantone, notes=notes, user_id=user.id)
+
+    cc = ColorCheck(pantone=pantone, hex_color=hex_color, notes=notes, points=points, user_id=user.id)
     db.session.add(cc)
     db.session.commit()
     return jsonify({'id': cc.id, 'created_at': cc.created_at.isoformat()}), 201
@@ -84,14 +100,16 @@ def list_checks():
     for e in entries:
         result.append({
             'id': e.id,
-            'hex_color': e.hex_color,
             'pantone': e.pantone,
+            'hex_color': e.hex_color,
             'notes': e.notes,
+            'points': e.points,
             'created_at': e.created_at.isoformat(),
             'user': e.user.username
         })
     return jsonify(result)
 
+# --- Userverwaltung ---
 @app.route('/users', methods=['GET'])
 def list_users():
     user = token_auth()
@@ -100,34 +118,6 @@ def list_users():
     users = User.query.all()
     return jsonify([{'id':u.id,'username':u.username,'role':u.role} for u in users])
 
-# === Index & Beispiel ===
-@app.route("/")
-def index():
-    return "PantoneChecker läuft erfolgreich 🚀"
-
-@app.route("/colors")
-def colors():
-    return {"status": "ok", "message": "Hier kommen später die Farben."}
-
-# === Datenbank anlegen & Admin-User erstellen ===
-with app.app_context():
-    db.create_all()
-    if not User.query.filter_by(username="admin").first():
-        admin = User(
-            username="admin",
-            password_hash=generate_password_hash("admin123"),
-            api_token=uuid.uuid4().hex,
-            role="admin"
-        )
-        db.session.add(admin)
-        db.session.commit()
-        print("Admin-User erstellt:", admin.username, "Token:", admin.api_token)
-
-# === App starten ===
-if __name__ == "__main__":
-    app.run(host='0.0.0.0', port=8080)
-
-# Neuen User anlegen (nur Admin)
 @app.route('/users', methods=['POST'])
 def add_user():
     user = token_auth()
@@ -151,7 +141,6 @@ def add_user():
     db.session.commit()
     return jsonify({'id': new_user.id, 'username': new_user.username, 'role': new_user.role, 'token': new_user.api_token}), 201
 
-# User löschen (nur Admin)
 @app.route('/users/<int:user_id>', methods=['DELETE'])
 def delete_user(user_id):
     user = token_auth()
@@ -162,3 +151,20 @@ def delete_user(user_id):
     db.session.commit()
     return jsonify({'message':'user deleted'})
 
+# --- Init DB & Admin ---
+with app.app_context():
+    db.create_all()
+    if not User.query.filter_by(username="admin").first():
+        admin = User(
+            username="admin",
+            password_hash=generate_password_hash("admin123"),
+            api_token=uuid.uuid4().hex,
+            role="admin"
+        )
+        db.session.add(admin)
+        db.session.commit()
+        print("Admin-User erstellt:", admin.username, "Token:", admin.api_token)
+
+# --- Start ---
+if __name__ == "__main__":
+    app.run(host='0.0.0.0', port=8080)
