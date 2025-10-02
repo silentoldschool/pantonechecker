@@ -170,3 +170,27 @@ with app.app_context():
 
 if __name__ == "__main__":
     app.run(host='0.0.0.0', port=8080)
+
+
+# ==========================
+# Apitoken
+# ==========================
+@app.route('/get-token', methods=['POST'])
+def get_token():
+    data = request.get_json() or {}
+    username = data.get('username')
+    password = data.get('password')
+    if not username or not password:
+        return jsonify({'error':'username and password required'}), 400
+    
+    user = User.query.filter_by(username=username).first()
+    if not user or not check_password_hash(user.password_hash, password):
+        return jsonify({'error':'invalid credentials'}), 401
+    
+    # Token generieren, falls noch nicht vorhanden
+    if not user.api_token:
+        user.api_token = uuid.uuid4().hex
+        db.session.commit()
+    
+    return jsonify({'username': user.username, 'api_token': user.api_token})
+
