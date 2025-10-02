@@ -3,12 +3,17 @@ from datetime import datetime
 from flask import Flask, request, jsonify, abort
 from flask_sqlalchemy import SQLAlchemy
 from werkzeug.security import generate_password_hash, check_password_hash
+from flask_cors import CORS  # <-- Import CORS
 
+# === Flask App ===
 app = Flask(__name__)
+CORS(app)  # <-- CORS aktivieren (alle Domains erlaubt)
+
 app.config['SQLALCHEMY_DATABASE_URI'] = os.getenv('DATABASE_URL','sqlite:///pantone.db')
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 db = SQLAlchemy(app)
 
+# === Datenbank-Modelle ===
 class User(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     username = db.Column(db.String(150), unique=True, nullable=False)
@@ -25,6 +30,7 @@ class ColorCheck(db.Model):
     user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
     user = db.relationship('User', backref='checks')
 
+# === Token-Authentifizierung ===
 def token_auth():
     token = request.headers.get('X-API-TOKEN') or request.headers.get('Authorization')
     if token and token.startswith('Token '):
@@ -36,6 +42,7 @@ def token_auth():
         abort(401, 'invalid token')
     return user
 
+# === Endpoints ===
 @app.route('/login', methods=['POST'])
 def login():
     data = request.get_json() or {}
@@ -92,16 +99,19 @@ def list_users():
     users = User.query.all()
     return jsonify([{'id':u.id,'username':u.username,'role':u.role} for u in users])
 
-if __name__ == "__main__":
-    app.run(host='0.0.0.0', port=8080)
+# === Index & Beispiel ===
+@app.route("/")
+def index():
+    return "PantoneChecker läuft erfolgreich 🚀"
 
-# DB anlegen
+@app.route("/colors")
+def colors():
+    return {"status": "ok", "message": "Hier kommen später die Farben."}
 
+# === Datenbank anlegen & Admin-User erstellen ===
 with app.app_context():
     db.create_all()
     if not User.query.filter_by(username="admin").first():
-        import uuid
-        from werkzeug.security import generate_password_hash
         admin = User(
             username="admin",
             password_hash=generate_password_hash("admin123"),
@@ -112,17 +122,6 @@ with app.app_context():
         db.session.commit()
         print("Admin-User erstellt:", admin.username, "Token:", admin.api_token)
 
-
-
-# check 
-@app.route("/")
-def index():
-    return "PantoneChecker läuft erfolgreich 🚀"
-
-# Beispiel: Farben-Endpunkt
-@app.route("/colors")
-def colors():
-    return {"status": "ok", "message": "Hier kommen später die Farben."}
-
-
-
+# === App starten ===
+if __name__ == "__main__":
+    app.run(host='0.0.0.0', port=8080)
